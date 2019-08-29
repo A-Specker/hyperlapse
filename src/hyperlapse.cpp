@@ -1,36 +1,43 @@
 #ifndef GPU
 #define GPU true
 
-#include <iostream>
-#include <opencv2/opencv.hpp>
-#include "utilities.hpp"
+#include "hyperlapse.hpp"
+#include "graph.hpp"
+
 //#include "opencv2/features2d.hpp"
 //#include "opencv2/cudafeatures2d.hpp"
-//#include "opencv2/xfeatures2d/cuda.hpp"
+#include "opencv2/xfeatures2d.hpp"
 
 using namespace cv;
 using namespace std;
 using namespace cv::cuda;
 
 
-VideoCapture load_video(String path, vector<Mat>& vid, int start_frame=Utility::FRST, int end_frame=Utility::LAST){
+VideoCapture load_cap(String path){
 	VideoCapture cap(path);
 	if( !cap.isOpened() )
 		throw "Can't open video! Too bad...";
 	// hyperlaps only from frame 2100 to 15000, because compare with others
 	//	int num_frames = (15000-2100)/12; // thats 12900, with ~2.8Mb --> 36gb RAM (its 32)
-	int num_frames = end_frame - start_frame;
-	vid.clear();
-	vid.reserve(num_frames);
-	cap.set(CV_CAP_PROP_POS_FRAMES, start_frame);
-	for (int i=0; i<num_frames; i++) {
-		Mat tmp;
-		cap >> tmp;
-		vid.push_back(tmp);
-	}
 	return cap;
 }
 
+void load_frame(Hyperlapse h, Mat& frame, int pos){
+	h.cap.set(CV_CAP_PROP_POS_FRAMES, pos);
+	h.cap >> frame;
+}
+
+void load_frames(Hyperlapse h, vector<Mat>& vid, int start_frame=Utility::FRST, int end_frame=Utility::LAST){
+	int num_frames = end_frame - start_frame;
+	vid.clear();
+	vid.reserve(num_frames);
+	h.cap.set(CV_CAP_PROP_POS_FRAMES, start_frame);
+	for (int i=0; i<num_frames; i++) {
+		Mat tmp;
+		h.cap >> tmp;
+		vid.push_back(tmp);
+	}
+}
 
 void surf_detection(Mat i1, Mat i2){
 
@@ -46,24 +53,24 @@ void surf_detection(Mat i1, Mat i2){
 	// detect features
 	SURF_CUDA surf(10000);
 	GpuMat keypoints1GPU, keypoints2GPU;
-	GpuMat descriptors1GPU, descriptors2GPU;
-	surf(img1, GpuMat(), keypoints1GPU, descriptors1GPU);
-	surf(img2, GpuMat(), keypoints2GPU, descriptors2GPU);
+	GpuMat descr_1_GPU, descr_2_GPU;
+	surf(img1, GpuMat(), keypoints1GPU, descr_1_GPU);
+	surf(img2, GpuMat(), keypoints2GPU, descr_2_GPU);
 	//	cout << "FOUND " << keypoints1GPU.cols << " keypoints on first image" << endl;
 	//	cout << "FOUND " << keypoints2GPU.cols << " keypoints on second image" << endl;
 
 	//	// match features
 	Ptr<cv::cuda::DescriptorMatcher> matcher = cv::cuda::DescriptorMatcher::createBFMatcher(surf.defaultNorm());
 	vector<DMatch> matches;
-	matcher->match(descriptors1GPU, descriptors2GPU, matches);
+	matcher->match(descr_1_GPU, descr_2_GPU, matches);
 
 	// get em on cpu
 	vector<KeyPoint> keypoints1, keypoints2;
-	vector<float> descriptors1, descriptors2;
+	vector<float> descr_1, descr_2;
 	surf.downloadKeypoints(keypoints1GPU, keypoints1);
 	surf.downloadKeypoints(keypoints2GPU, keypoints2);
-	surf.downloadDescriptors(descriptors1GPU, descriptors1);
-	surf.downloadDescriptors(descriptors2GPU, descriptors2);
+	surf.downloadDescriptors(descr_1_GPU, descr_1);
+	surf.downloadDescriptors(descr_2_GPU, descr_2);
 
 
 
@@ -94,6 +101,57 @@ void surf_detection(Mat i1, Mat i2){
 	imshow("matches", img_matches);
 	waitKey(0);
 
+}
+
+void sift_detection(Mat& i1, Mat& i2){
+	Mat i1_grey, i2_grey;
+	cv::cvtColor(i1, i1_grey, CV_BGR2GRAY);
+	cv::cvtColor(i2, i2_grey, CV_BGR2GRAY);
+
+
+	Ptr<xfeatures2d::SIFT> detector = xfeatures2d::SIFT::create();
+	vector<KeyPoint> keypoints_1, keypoints_2;
+	Mat descr_1, descr_2;
+
+	detector->detect(i1_grey, keypoints_1);
+	detector->detect(i2_grey, keypoints_2);
+
+	detector->compute(i1_grey, keypoints_1, descr_1);
+	detector->compute(i2_grey, keypoints_2, descr_2);
+
+
+	// now, whats happening here?
+	vector<DMatch> matches;
+	vector<Point2f> p1, p2;
+	vector<DMatch> ms;
+
+	for(unsigned int i=0; i<matches.size(); i++){
+		DMatch m(matches[i].queryIdx, matches[i].trainIdx, matches[i].distance);
+		ms.push_back(m);
+
+		//		cout << matches[i].queryIdx << "; " << matches[i].trainIdx << endl;
+		//		cout << keypoints1[matches[i].queryIdx].pt << endl;
+		//		cout << keypoints2[matches[i].trainIdx].pt << endl;
+		//		cout << matches[i].distance << endl;
+
+
+		p1.push_back(keypoints_1[matches[i].queryIdx].pt);
+		p2.push_back(keypoints_2[matches[i].trainIdx].pt);
+	}
+
+	// and the fundamental matrix F...
+	cout << "find und" << endl;
+	Mat fund_mat = findFundamentalMat(p1, p2, FM_RANSAC, 3, 0.99);
+	cout << fund_mat << endl;
+
+
+	Mat img_matches;
+	drawMatches(Mat(i1_grey), keypoints_1, Mat(i2_grey), keypoints_2, matches, img_matches);
+	namedWindow("matches", 0);
+	imshow("matches", img_matches);
+	waitKey(0);
+
+	return;
 }
 
 
@@ -134,7 +192,7 @@ double optical_flow_farneback(Mat& i1, Mat& i2){
 }
 
 double optical_flow_pyr(Mat& i1, Mat& i2){
-	//shit
+	// sparse but shit
 	Mat i1_grey, i2_grey;
 	vector<Point2f> prevPts, nextPts, diffPts;
 	cv::cvtColor(i1, i1_grey, CV_BGR2GRAY);
@@ -175,7 +233,7 @@ double optical_flow_pyr(Mat& i1, Mat& i2){
 
 	//	cout << cv::norm(err) << endl;
 	//	cout << err << endl;
-//	cout << "######" << endl;
+	//	cout << "######" << endl;
 
 	return d;
 
@@ -207,10 +265,10 @@ double optical_flow_brox(Mat& i1, Mat& i2){
 
 	double diff = cv::sum(cv::abs(flowx))[0];
 	diff += cv::sum(cv::abs(flowy))[0];
-//	cout << diff << endl;
-//	Utility::colorize_flow(flowx, flowy, to_string(diff) + ".png");
-//	imwrite("frame0.png", i1);
-//	imwrite("org_" + to_string(diff) + ".png", i2);
+	//	cout << diff << endl;
+	//	Utility::colorize_flow(flowx, flowy, to_string(diff) + ".png");
+	//	imwrite("frame0.png", i1);
+	//	imwrite("org_" + to_string(diff) + ".png", i2);
 	return diff;
 }
 
@@ -237,7 +295,7 @@ double optical_flow_tvl1(Mat& i1, Mat& i2){
 
 	double diff = cv::sum(cv::abs(flowx))[0];
 	diff += cv::sum(cv::abs(flowy))[0];
-//	cout << diff << endl;
+	//	cout << diff << endl;
 	//	Utility::colorize_flow(flowx, flowy);
 	return diff;
 }
@@ -318,7 +376,63 @@ double block_matching(Mat& i1, Mat& i2){
 
 
 
-void test_farneback(string path){
+
+
+void another_test(Hyperlapse& h, HGraph& g, int idx = 2100){
+	g.add_node(idx);
+	unsigned int end = 2200;
+	unsigned int least_offset = 8;
+	unsigned int max_offset = 12;
+	Mat fr;
+	vector<Mat> video;
+	for(unsigned int k=0; k<5000; k++){
+		load_frame(h, fr, idx);
+		load_frames(h, video, idx+least_offset, idx+max_offset);
+
+		for(unsigned int i=0; i<video.size(); i++){
+			if(g.edge_exists(idx, idx+least_offset+i)){
+				h.skip++;
+				continue;
+			}
+			double c1 = optical_flow_farneback(fr, video[i]) * h.norm_pix();
+			double c2 = block_matching(fr, video[i])* h.norm_pix();
+			double c3 = earthmover_distance(fr, video[i])* h.norm_pix();
+
+			//		cout << i << ": " << c1 << "; " << c2 << "; " << c3 << endl;
+
+			double cost = c1*Utility::ALPHA() + c2*Utility::BETA() + c3* Utility::GAMMA();
+			g.add_edge(idx, idx+least_offset+i, cost);
+			h.done++;
+			//		cout << idx+least_offset+i << endl;
+			//		g.print_nodes();
+			if (idx+least_offset+i < end){
+				//			another_test(h, g, idx+least_offset+i);
+			}
+		}
+		idx++;
+		cout << idx << endl;
+	}
+}
+
+void test_dijkstra(Hyperlapse h, HGraph g){
+	vector<int> shortest_path;
+	g.add_node(1);
+	g.add_node(2);
+	g.add_node(3);
+	g.add_node(4);
+	g.add_node(5);
+
+	g.add_edge(1, 2, 1.0);
+	g.add_edge(1, 4, 2.0);
+	g.add_edge(1, 3, 7.0);
+	g.add_edge(2, 3, 3.0);
+	g.add_edge(3, 4, 5.0);
+	g.add_edge(3, 5, 1.0);
+	g.add_edge(4, 5, 7.0);
+	g.Dijkstra(shortest_path);
+}
+
+void test_farneback(Hyperlapse h){
 	vector<Mat> output;
 
 	int idx = 2100;
@@ -331,7 +445,7 @@ void test_farneback(string path){
 	VideoCapture capture;
 
 	while(true){
-		capture = load_video(path, vid, idx, idx+max_offset+1);
+		load_frames(h, vid, idx, idx+max_offset+1);
 		for(int i=least_offset; i<=max_offset; i++){
 			double diff = optical_flow_farneback(vid[0], vid[i]);
 			//			cout << min_diff<< "; " << diff << "; " << i << endl;
@@ -372,7 +486,7 @@ void naiv_hyper(string path){
 
 }
 
-void other_tests(string path){
+void other_tests(Hyperlapse h){
 	int idx = 2100;
 	int end = 3000;
 	int least_offset = 5;
@@ -385,23 +499,23 @@ void other_tests(string path){
 	VideoCapture capture;
 
 	while(true){
-		capture = load_video(path, vid, idx, idx+max_offset+1);
+		load_frames(h, vid, idx, idx+max_offset+1);
 		for(int i=least_offset; i<=max_offset; i++){
 
 			diff[0] = optical_flow_farneback(vid[0], vid[i]);
-//			cout << " 1 " << endl;
+			//			cout << " 1 " << endl;
 			diff[1] = optical_flow_farneback(vid[0], vid[i]);
-//			cout << " 2 " << endl;
+			//			cout << " 2 " << endl;
 			diff[2] = optical_flow_brox(vid[0], vid[i]);
-//			cout << " 3 " << endl;
-//			diff[3] = optical_flow_tvl1(vid[0], vid[i]);
+			//			cout << " 3 " << endl;
+			//			diff[3] = optical_flow_tvl1(vid[0], vid[i]);
 			diff[3] = diff[2];
 
-//			cout << " 4 " << endl;
+			//			cout << " 4 " << endl;
 			diff[4] = earthmover_distance(vid[0], vid[i]);
-//			cout << " 5 " << endl;
+			//			cout << " 5 " << endl;
 			diff[5] = block_matching(vid[0], vid[i]);
-//			cout << " 6 " << endl;
+			//			cout << " 6 " << endl;
 
 			for(int j=0; j<6; j++){
 				if(diff[j]<min_diff[j]){
@@ -429,32 +543,25 @@ void other_tests(string path){
 // TODO: Im Paper EgoSampling machen die nen Graphen dessen Gweicht aus 3 Komponenten besteht:
 // TODO: 1. FOE(opipole)	2. Velocity Cost (optflow)	3. EMD
 // TODO: FOE fehlt bis jetzt komplett, da muss ich mich vielleicht noch ins zeug legen
-// TODO:
+// TODO: Ich will eigetlich auch einen Graphen und Daijstra, weil das besser is als iterativ
 
 int main(int argc, char** argv) {
+	HGraph g;
+	Hyperlapse h;
+	h.cap = load_cap(argv[1]);
 
-	vector<Mat> vid;
-	VideoCapture capture = load_video(argv[1], vid);
-	int num_pix = capture.get(3) * capture.get(4); //width and height
-	float norm_pix = 1/(float)num_pix;
+	Mat a, b;
+	load_frames(h, h.video, 2100, 2151);
+	surf_detection(h.video[0], h.video[0]);
+	surf_detection(h.video[0], h.video[1]);
+	surf_detection(h.video[0], h.video[10]);
+	surf_detection(h.video[0], h.video[50]);
 
-	// use fundamental matrix to determine the distance
-	// alternativly use FOE/optical flow
-	//	surf_detection(vid[0], vid[0]);
 
-	//todo: use optical flow
 
-	//	test_farneback(argv[1]);
-	//	optical_flow_pyr(vid[0], vid[1]);
-	//	optical_flow_pyr(vid[0], vid[500]);
-	//	naiv_hyper(argv[1]);
+	//	another_test(h, g);
+	//	test_dijkstra(h, g);
 
-//	cout << block_matching(vid[0], vid[0]) * norm_pix<< endl;
-//	cout << block_matching(vid[0], vid[1])* norm_pix << endl;
-//	cout << block_matching(vid[0], vid[2]) * norm_pix<< endl;
-//	cout << block_matching(vid[0], vid[500]) * norm_pix<< endl;
-
-	other_tests(argv[1]);
 
 }
 #endif // GPUMODE

@@ -12,7 +12,14 @@ public:
 	static void save_video(std::vector<cv::Mat> &video, float fps, std::string name="outcpp.avi", std::string path="./");
 
 	const static int FRST = 2100; // Start frame
-	const static int LAST=  2701; // Last Frame
+	const static int LAST =  2701; // Last Frame
+
+	// weights
+	static double ALPHA(){ return 1.4;} // opic
+	static double BETA() { return 1.2;} // block
+	static double GAMMA(){ return 0.8;} // EDM
+
+
 
 };
 
