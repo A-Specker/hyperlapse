@@ -3,10 +3,10 @@
 
 #include "hyperlapse.hpp"
 #include "graph.hpp"
+#include "stabilize.hpp"
 
-//#include "opencv2/features2d.hpp"
-//#include "opencv2/cudafeatures2d.hpp"
 #include "opencv2/xfeatures2d.hpp"
+
 
 using namespace cv;
 using namespace std;
@@ -19,6 +19,7 @@ VideoCapture load_cap(String path){
 		throw "Can't open video! Too bad...";
 	// hyperlaps only from frame 2100 to 15000, because compare with others
 	//	int num_frames = (15000-2100)/12; // thats 12900, with ~2.8Mb --> 36gb RAM (its 32)
+	cout << "Cap loaded." << endl;
 	return cap;
 }
 
@@ -27,7 +28,7 @@ void load_frame(Hyperlapse h, Mat& frame, int pos){
 	h.cap >> frame;
 }
 
-void load_frames(Hyperlapse h, vector<Mat>& vid, int start_frame=Utility::FRST, int end_frame=Utility::LAST){
+void load_frames(Hyperlapse h, std::vector<Mat>& vid, int start_frame=Utility::FRST, int end_frame=Utility::LAST){
 	int num_frames = end_frame - start_frame;
 	vid.clear();
 	vid.reserve(num_frames);
@@ -125,6 +126,9 @@ void sift_detection(Mat& i1, Mat& i2){
 	vector<Point2f> p1, p2;
 	vector<DMatch> ms;
 
+	auto matcher = cv::DescriptorMatcher::create(2);
+	matcher->match(descr_1, descr_2, matches);
+
 	for(unsigned int i=0; i<matches.size(); i++){
 		DMatch m(matches[i].queryIdx, matches[i].trainIdx, matches[i].distance);
 		ms.push_back(m);
@@ -139,14 +143,17 @@ void sift_detection(Mat& i1, Mat& i2){
 		p2.push_back(keypoints_2[matches[i].trainIdx].pt);
 	}
 
+	cout << matches.size() << endl;
+
 	// and the fundamental matrix F...
-	cout << "find und" << endl;
+	cout << "Find fundamental Matrix F" << endl;
+
 	Mat fund_mat = findFundamentalMat(p1, p2, FM_RANSAC, 3, 0.99);
 	cout << fund_mat << endl;
 
 
 	Mat img_matches;
-	drawMatches(Mat(i1_grey), keypoints_1, Mat(i2_grey), keypoints_2, matches, img_matches);
+	drawMatches(i1_grey, keypoints_1, i2_grey, keypoints_2, matches, img_matches);
 	namedWindow("matches", 0);
 	imshow("matches", img_matches);
 	waitKey(0);
@@ -374,18 +381,67 @@ double block_matching(Mat& i1, Mat& i2){
 	return diff;
 }
 
+double vpp_optflow(Mat& i1, Mat& i2, Hyperlapse h){
+
+
+
+	vpp::box2d domain = vpp::make_box2d(h.cap.get(CV_CAP_PROP_FRAME_HEIGHT),
+			h.cap.get(CV_CAP_PROP_FRAME_WIDTH));
+	vpp::video_extruder_ctx ctxx(domain);
+
+	vpp::image2d<vpp::vuchar3> fr1 = vpp::from_opencv<vpp::vuchar3>(i1);
+	vpp::image2d<vpp::vuchar3> fr2 = vpp::from_opencv<vpp::vuchar3>(i2);
+	auto f1 = vpp::clone(fr1, vpp::_border = 3);
+	auto f2 = vpp::clone(fr2, vpp::_border = 3);
+	fill_border_mirror(f1);
+	fill_border_mirror(f2);
+	auto f1_grey = vpp::rgb_to_graylevel<unsigned char>(f1);
+	auto f2_grey = vpp::rgb_to_graylevel<unsigned char>(f2);
+	vpp::image2d<unsigned char> prev_frame(domain);
+	vpp::video_extruder_update(ctxx, f1_grey, f1_grey,
+			vpp::_detector_th = 10,
+			vpp::_keypoint_spacing = 5,
+			vpp::_detector_period = 1,
+			vpp::_max_trajectory_length = 15);
+
+	vpp::video_extruder_update(ctxx, f1_grey, f2_grey,
+			vpp::_detector_th = 10,
+			vpp::_keypoint_spacing = 5,
+			vpp::_detector_period = 1,
+			vpp::_max_trajectory_length = 15);
+
+
+
+//	cout << "Hist size: " <<  ctxx.trajectories[0].history_.size() <<endl;
+//	cout << ctxx.trajectories[0].history_[0][0] << ", " << ctxx.trajectories[0].history_[0][1] <<  endl;
+//	cout << ctxx.trajectories[0].history_[1][0] << ", " <<  ctxx.trajectories[0].history_[1][1] <<  endl;
+//	cout << "Veclocity: " << ctxx.keypoints[0].velocity[0] <<  ", " <<  ctxx.keypoints[0].velocity[1] << endl;
+	double sum = 0;
+	for(int i=0; i< ctxx.keypoints.size(); i++){
+		sum += hypot(ctxx.keypoints[i].velocity[0], ctxx.keypoints[i].velocity[1]);
+//		cout << ctxx.trajectories[i].history_.size() << endl;
+	}
+//	cout << sum << ", " << sum/ctxx.keypoints.size() << endl;
+	//	auto display = clone(f1);
+	//	vpp::draw::draw_trajectories(display, ctxx.trajectories, 200);
+	//	cv::imshow("Trajectories", to_opencv(display));
+	//	cv::waitKey(0);
+	return sum/ctxx.keypoints.size();
+
+
+}
 
 
 
 
-void another_test(Hyperlapse& h, HGraph& g, int idx = 2100){
+void get_path(Hyperlapse& h, HGraph& g, int idx = 2100){
 	g.add_node(idx);
 	unsigned int end = 2200;
-	unsigned int least_offset = 8;
-	unsigned int max_offset = 12;
+	unsigned int least_offset = 6;
+	unsigned int max_offset = 18;
 	Mat fr;
 	vector<Mat> video;
-	for(unsigned int k=0; k<5000; k++){
+	for(unsigned int k=0; k<12900; k++){
 		load_frame(h, fr, idx);
 		load_frames(h, video, idx+least_offset, idx+max_offset);
 
@@ -394,7 +450,8 @@ void another_test(Hyperlapse& h, HGraph& g, int idx = 2100){
 				h.skip++;
 				continue;
 			}
-			double c1 = optical_flow_farneback(fr, video[i]) * h.norm_pix();
+//			double c1 = optical_flow_farneback(fr, video[i]) * h.norm_pix();
+			double c1 = vpp_optflow(fr, video[i], h);
 			double c2 = block_matching(fr, video[i])* h.norm_pix();
 			double c3 = earthmover_distance(fr, video[i])* h.norm_pix();
 
@@ -403,6 +460,8 @@ void another_test(Hyperlapse& h, HGraph& g, int idx = 2100){
 			double cost = c1*Utility::ALPHA() + c2*Utility::BETA() + c3* Utility::GAMMA();
 			g.add_edge(idx, idx+least_offset+i, cost);
 			h.done++;
+			cout << idx << ": " << c1*Utility::ALPHA() << ", " << c2*Utility::BETA() << ", " << c3*Utility::GAMMA() << endl;
+
 			//		cout << idx+least_offset+i << endl;
 			//		g.print_nodes();
 			if (idx+least_offset+i < end){
@@ -410,8 +469,9 @@ void another_test(Hyperlapse& h, HGraph& g, int idx = 2100){
 			}
 		}
 		idx++;
-		cout << idx << endl;
 	}
+	g.Dijkstra(h.path);
+
 }
 
 void test_dijkstra(Hyperlapse h, HGraph g){
@@ -469,20 +529,20 @@ void test_farneback(Hyperlapse h){
 
 void naiv_hyper(string path){
 	vector<Mat> vid;
-	VideoCapture cap("out_5000.avi");
-	int frms = cap.get(CV_CAP_PROP_FRAME_COUNT);
-	int skip = 2900/frms;
+//	VideoCapture cap("out_15000.avi");
+//	int frms = cap.get(CV_CAP_PROP_FRAME_COUNT);
+	int skip = 10;
 
 
 	VideoCapture ca(path);
-	for (int i=0; i<frms; i++) {
+	for (int i=0; i<(15000-2100)/10; i++) {
 		ca.set(CV_CAP_PROP_POS_FRAMES, 2100+i*skip);
 		Mat tmp;
 		ca >> tmp;
 		vid.push_back(tmp);
 	}
 
-	Utility::save_video(vid, 24.0f, "naiv_5000.avi");
+	Utility::save_video(vid, 24.0f, "naiv_15000.avi");
 
 }
 
@@ -540,28 +600,28 @@ void other_tests(Hyperlapse h){
 
 }
 
-// TODO: Im Paper EgoSampling machen die nen Graphen dessen Gweicht aus 3 Komponenten besteht:
+// TODO: Im Paper EgoSampling machen die nen Graphen dessen Gewicht aus 3 Komponenten besteht:
 // TODO: 1. FOE(opipole)	2. Velocity Cost (optflow)	3. EMD
 // TODO: FOE fehlt bis jetzt komplett, da muss ich mich vielleicht noch ins zeug legen
 // TODO: Ich will eigetlich auch einen Graphen und Daijstra, weil das besser is als iterativ
 
 int main(int argc, char** argv) {
-	HGraph g;
+	cout << "Start." << endl;
 	Hyperlapse h;
+	HGraph g;
 	h.cap = load_cap(argv[1]);
 
-	Mat a, b;
-	load_frames(h, h.video, 2100, 2151);
-	surf_detection(h.video[0], h.video[0]);
-	surf_detection(h.video[0], h.video[1]);
-	surf_detection(h.video[0], h.video[10]);
-	surf_detection(h.video[0], h.video[50]);
 
 
+//	string vid = "/home/specker/Documents/hyperlapse/opencv/hyperlapse/Release/15000_vpp.avi";
+//	Stabilize::stabilize(h.cap, vid);
 
-	//	another_test(h, g);
-	//	test_dijkstra(h, g);
+
+//	get_path(h, g);
+//	Utility::frms2vis(argv[1], h.path);
+
 
 
 }
+
 #endif // GPUMODE

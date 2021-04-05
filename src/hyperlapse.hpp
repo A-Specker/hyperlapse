@@ -2,6 +2,17 @@
 #include <opencv2/opencv.hpp>
 #include "utilities.hpp"
 
+
+#include <vpp/vpp.hh>
+#include <vpp/algorithms/video_extruder.hh>
+#include <vpp/utils/opencv_bridge.hh>
+#include <vpp/utils/opencv_utils.hh>
+#include <vpp/draw/draw_trajectories.hh>
+//#pragma GCC diagnostic ignored "-Wunused-parameter"
+//#pragma GCC diagnostic ignored "-Wunknown-pragmas"
+//#pragma GCC diagnostic ignored "-Wsign-compare"
+
+
 using namespace cv;
 using namespace std;
 

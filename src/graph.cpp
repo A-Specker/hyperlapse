@@ -95,6 +95,7 @@ void erase(vector<int>& vec, int ele){
 /*
  * This will give you the shortest path
  * from nodes[0] to nodes[last]
+ * use h.path as path
  */
 
 void HGraph::Dijkstra(vector<int>& path){
@@ -105,7 +106,6 @@ void HGraph::Dijkstra(vector<int>& path){
 	vector<dijk_pair> verts;
 	for (unsigned int i=0; i<nodes.size(); i++ )
 		verts.push_back({nodes[i], INF, false, -1});
-	cout << "All Vars initialized!" << endl;
 
 	// get first node
 	verts[0].dist = 0.0;
@@ -183,7 +183,7 @@ void HGraph::Dijkstra(vector<int>& path){
 
 	cout << "Es wurden " << path.size() << " Frames selektiert." << endl;
 		for (unsigned int i=0; i<path.size(); i++ ) {
-			cout <<  path[i] << endl;
+			cout <<  path[i] << "," << endl;
 		}
 }
 

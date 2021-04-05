@@ -13,3 +13,9 @@ all with __-L__ goes (without -L infront) to search path.
 The entries with __-l__ are modules, include the ones you need (see OpenCV doc for each funcition to find out)
 
 Dont forget to Alt+Enter (Project Properties) and add the includes in c++ build -> Settings
+
+New test with vpp (https://github.com/matt-42/vpp)
+/graphics/opt/opt_Ubuntu18.04/eigen/eigen-eigen-e5e305a158a0
+/home/specker/programs/vpp
+/home/specker/programs/vpp/externals/iod
+
